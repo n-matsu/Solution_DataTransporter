@@ -82,7 +82,9 @@ namespace Kleber.DataTransporter
 		where TResult : ITransportActionResult
 		where TStatus : ITransportActionStatus
 	{
-		Task<TResult> Execute(IProgress<TStatus> progress);
+		Task<TResult> Execute(
+			CancellationToken cancelToken,
+			IProgress<TStatus> progress);
 	}
 
 	public abstract class TransportActionBase<TResult, TStatus>
@@ -97,7 +99,9 @@ namespace Kleber.DataTransporter
 		}
 		public string Id { get; private set; }
 		protected ITransportContext Context { get; private set; }
-		public abstract Task<TResult> Execute(IProgress<TStatus> progress);
+		public abstract Task<TResult> Execute(
+			CancellationToken cancelToken,
+			IProgress<TStatus> progress);
 	}
 
 	public interface ITransportSource<TData>
@@ -231,6 +235,7 @@ namespace Kleber.DataTransporter
 	{
 		private TaskCompletionSource<TransportActionResult> m_tcs;
 		private IProgress<TransportActionStatus> m_progress;
+		private CancellationToken m_cancelToken;
 
 		public TransportAction(
 			string id,
@@ -249,7 +254,6 @@ namespace Kleber.DataTransporter
 		}
 		public DbCommand CmdSrc { get; private set; }
 		public DbCommand CmdDst { get; private set; }
-		public CancellationToken CancelToken { get; private set; }
 		public TransportActionStatus Status { get; private set; }
 		public ITransportActionResult Result { get; private set; }
 
@@ -263,20 +267,18 @@ namespace Kleber.DataTransporter
 		}
 
 		public override Task<TransportActionResult> Execute(
+			CancellationToken cancelToken,
 			IProgress<TransportActionStatus> progress
 			)
 		{
+			m_cancelToken = cancelToken;
 			m_progress = progress;
 			m_tcs = new TaskCompletionSource<TransportActionResult>();
-			this.Status = new TransportActionStatus(this.Id, TransportActionStatusCode.None);
-			progress.Report(this.Status);
-			Task<TransportActionResult>.Run(() => this.DoExecute(m_tcs, m_progress));
+			this.SetResultAndReport_None();
+			Task<TransportActionResult>.Run(() => this.DoExecute());
 			return m_tcs.Task;
 		}
-		private void DoExecute(
-			TaskCompletionSource<TransportActionResult> tcs,
-			IProgress<TransportActionStatus> progress
-			)
+		private void DoExecute()
 		{
 			var disposable =
 				this.Source.Create()
@@ -286,7 +288,7 @@ namespace Kleber.DataTransporter
 					this.Handlers.ForEach(h => dataNew = h.Handle(dataNew));
 					return dataNew;
 				})
-				.Do(_ => this.CancelToken.ThrowIfCancellationRequested())
+				.Do(_ => m_cancelToken.ThrowIfCancellationRequested())
 				.Subscribe(
 					data => this.Sink.Write(data),
 					e =>
@@ -300,6 +302,12 @@ namespace Kleber.DataTransporter
 					);
 		}
 
+		private void SetResultAndReport_None()
+		{
+			this.SetResultAndReport(
+				TransportActionStatusCode.None,
+				TransportActionResultCode.None);
+		}
 		private void SetResultAndReport_OK()
 		{
 			this.SetResultAndReport(
